@@ -1,0 +1,13 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+.DS_Store
+*.log
+HELP.md
+build/
+.gradle/
+.mvn/
+mvnw
+mvnw.cmd

@@ -1,0 +1,747 @@
+{
+  "info": {
+    "name": "Resilient API Gateway - Mayur",
+    "description": "Complete test collection for the Spring Cloud Gateway with JWT, Rate Limiting, and Circuit Breaker.\n\n## Setup\n1. Make sure the gateway is running on http://localhost:8080\n2. Run **Login** first — it auto-saves the JWT to a collection variable\n3. Then run any other request — it picks up the token automatically\n\n## Folders\n- **Auth** - Login to get JWT\n- **User Service (via Gateway)** - Tests for /api/users routes\n- **Order Service (via Gateway)** - Tests for /api/orders routes\n- **Negative Tests** - Auth failures, malformed tokens\n- **Rate Limiting Demo** - Hammer the gateway to trigger 429s\n- **Circuit Breaker Demo** - Chaos toggles + breaker tripping\n- **Actuator (Observability)** - Health, breaker state, routes",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  },
+  "variable": [
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080",
+      "type": "string",
+      "description": "Base URL of the API gateway"
+    },
+    {
+      "key": "user_service_url",
+      "value": "http://localhost:8081",
+      "type": "string",
+      "description": "Direct URL to user service (for chaos toggles)"
+    },
+    {
+      "key": "order_service_url",
+      "value": "http://localhost:8082",
+      "type": "string",
+      "description": "Direct URL to order service (for chaos toggles)"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string",
+      "description": "Auto-populated by the Login request"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Auth",
+      "description": "Login endpoint to get a JWT. Run this FIRST — the token is auto-saved.",
+      "item": [
+        {
+          "name": "Login (auto-saves JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has accessToken', function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('accessToken');",
+                  "    pm.expect(json.accessToken).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "// Save the token to the collection variable so other requests can use it",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('jwt_token', json.accessToken);",
+                  "console.log('JWT saved to collection variable: jwt_token');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"mayur\"\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/auth/login",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Issues a JWT signed with HMAC-SHA256. Token is valid for 1 hour. The post-response script automatically stores it in the `jwt_token` collection variable."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. User Service (via Gateway)",
+      "description": "All requests go through the gateway and require a valid JWT.",
+      "item": [
+        {
+          "name": "List Users",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is an array', function () {",
+                  "    pm.expect(pm.response.json()).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Gateway header is present', function () {",
+                  "    pm.expect(pm.response.headers.get('X-Gateway')).to.eql('mayur-resilient-gateway-v1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            },
+            "description": "Lists all users. Goes through:\n1. JWT filter (validates token, adds X-User-Id header)\n2. Rate limiter (checks token bucket)\n3. Circuit breaker (forwards to user-service)"
+          }
+        },
+        {
+          "name": "Get User by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/users/1",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users",
+                "1"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Order Service (via Gateway)",
+      "description": "Orders have STRICTER limits (5 req/sec, burst 10) — easier to trigger 429.",
+      "item": [
+        {
+          "name": "List Orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/orders",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has orderId', function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('orderId');",
+                  "    pm.expect(json.status).to.eql('CREATED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"PROD-101\",\n  \"quantity\": 2,\n  \"amount\": 1599.50\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/api/orders",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Negative Tests (Auth Failures)",
+      "description": "Tests proving the JWT filter blocks bad requests.",
+      "item": [
+        {
+          "name": "No Token (expect 401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 401', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test('X-Auth-Error header explains why', function () {",
+                  "    pm.expect(pm.response.headers.get('X-Auth-Error')).to.include('Missing');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            },
+            "description": "No Authorization header → JWT filter rejects with 401."
+          }
+        },
+        {
+          "name": "Wrong Scheme (expect 401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic dXNlcjpwYXNz"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            },
+            "description": "Sends Basic auth — gateway requires Bearer."
+          }
+        },
+        {
+          "name": "Garbage Token (expect 401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 401', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test('Error explains invalid token', function () {",
+                  "    pm.expect(pm.response.headers.get('X-Auth-Error')).to.include('Invalid');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer this.is.not.a.valid.jwt"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            },
+            "description": "Malformed JWT → signature verification fails."
+          }
+        },
+        {
+          "name": "Tampered Token (expect 401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJoYWNrZXIiLCJyb2xlcyI6IkFETUlOIiwiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjk5OTk5OTk5OTl9.fake_signature_that_will_not_verify"
+                }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            },
+            "description": "Real-looking JWT but signature was tampered with — proves HMAC verification works."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Rate Limiting Demo",
+      "description": "Use Postman's Collection Runner to hit these many times rapidly. Watch for 429 responses.\n\n**How to demo:**\n1. Right-click this folder → Run folder\n2. Set iterations to 30, delay to 0ms\n3. Watch some requests succeed (200) and others fail (429)",
+      "item": [
+        {
+          "name": "Hammer Users Endpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Got 200 OK or 429 Too Many Requests', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 429]);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 429) {",
+                  "    console.log('🚫 RATE LIMITED - Token bucket empty!');",
+                  "} else {",
+                  "    console.log('✅ ALLOWED - tokens remaining in bucket');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            },
+            "description": "User route limit: replenishRate=10/s, burstCapacity=20.\n\nFire this 30+ times in quick succession (Collection Runner) and you'll see 429s once the burst is exhausted."
+          }
+        },
+        {
+          "name": "Hammer Orders Endpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Got 200 OK or 429 Too Many Requests', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 429, 503]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/orders",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            },
+            "description": "Order route limit is STRICTER: replenishRate=5/s, burstCapacity=10.\n\nEasier to trigger 429 here. Run 15+ times rapidly."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Circuit Breaker Demo",
+      "description": "**Demo flow:**\n1. Run **Enable Failure Mode** (poisons user-service)\n2. Run **Trigger Failures** in Collection Runner (15 iterations, 0ms delay)\n   - First ~10 calls return 500 (real failures)\n   - Then breaker OPENS, next calls return 503 INSTANTLY (fallback)\n3. Run **Check Breaker State** — should show OPEN\n4. Run **Disable Failure Mode**\n5. Wait 10 seconds (waitDurationInOpenState)\n6. Run **List Users** from folder #2 — breaker recovers via HALF_OPEN → CLOSED",
+      "item": [
+        {
+          "name": "Enable Failure Mode (User Service)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{user_service_url}}/api/users/chaos/fail?enabled=true",
+              "host": [
+                "{{user_service_url}}"
+              ],
+              "path": [
+                "api",
+                "users",
+                "chaos",
+                "fail"
+              ],
+              "query": [
+                {
+                  "key": "enabled",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Note: hits user-service DIRECTLY on port 8081, not through the gateway. Now every /api/users call will throw an exception."
+          }
+        },
+        {
+          "name": "Disable Failure Mode (User Service)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{user_service_url}}/api/users/chaos/fail?enabled=false",
+              "host": [
+                "{{user_service_url}}"
+              ],
+              "path": [
+                "api",
+                "users",
+                "chaos",
+                "fail"
+              ],
+              "query": [
+                {
+                  "key": "enabled",
+                  "value": "false"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Enable Slow Mode (5s delay)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{user_service_url}}/api/users/chaos/slow?enabled=true",
+              "host": [
+                "{{user_service_url}}"
+              ],
+              "path": [
+                "api",
+                "users",
+                "chaos",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "enabled",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Makes user-service take 5s. Gateway's 3s timeLimiter fires → counted as failures → breaker opens."
+          }
+        },
+        {
+          "name": "Disable Slow Mode",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{user_service_url}}/api/users/chaos/slow?enabled=false",
+              "host": [
+                "{{user_service_url}}"
+              ],
+              "path": [
+                "api",
+                "users",
+                "chaos",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "enabled",
+                  "value": "false"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Trigger Failures (run 15+ times)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status indicates failure or fallback', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([500, 503, 504]);",
+                  "});",
+                  "",
+                  "if (pm.response.code === 503) {",
+                  "    const json = pm.response.json();",
+                  "    if (json.status === 'DEGRADED') {",
+                  "        console.log('⚡ CIRCUIT OPEN - serving fallback instantly!');",
+                  "    }",
+                  "} else if (pm.response.code === 500) {",
+                  "    console.log('💥 Real failure (breaker still counting)');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            },
+            "description": "After enabling failure mode, run this 15+ times. You'll see 500s flip to 503s (fallback) once the breaker opens (after 10 failed calls with >50% failure rate)."
+          }
+        },
+        {
+          "name": "Direct Fallback Endpoint",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{gateway_url}}/fallback/users",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "fallback",
+                "users"
+              ]
+            },
+            "description": "What the breaker returns when open. Doesn't require auth (in our publicPaths list)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Actuator (Observability)",
+      "description": "Production monitoring endpoints — show off operational maturity.",
+      "item": [
+        {
+          "name": "Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Status is UP', function () {",
+                  "    pm.expect(pm.response.json().status).to.eql('UP');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{gateway_url}}/actuator/health",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Reports overall health, including circuit breaker states and Redis connectivity."
+          }
+        },
+        {
+          "name": "Circuit Breaker State",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{gateway_url}}/actuator/circuitbreakers",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "actuator",
+                "circuitbreakers"
+              ]
+            },
+            "description": "Shows current state (CLOSED/OPEN/HALF_OPEN) of every circuit breaker."
+          }
+        },
+        {
+          "name": "Circuit Breaker Events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{gateway_url}}/actuator/circuitbreakerevents",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "actuator",
+                "circuitbreakerevents"
+              ]
+            },
+            "description": "Recent state transitions and call outcomes — perfect for debugging why a breaker tripped."
+          }
+        },
+        {
+          "name": "Gateway Routes",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{gateway_url}}/actuator/gateway/routes",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "actuator",
+                "gateway",
+                "routes"
+              ]
+            },
+            "description": "Lists all configured routes, predicates, and filters. Confirms your config was loaded."
+          }
+        },
+        {
+          "name": "Metrics Index",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{gateway_url}}/actuator/metrics",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "actuator",
+                "metrics"
+              ]
+            },
+            "description": "List of all available metrics. Pick one and append to URL e.g. /actuator/metrics/resilience4j.circuitbreaker.calls"
+          }
+        },
+        {
+          "name": "Specific Metric: CB Calls",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{gateway_url}}/actuator/metrics/resilience4j.circuitbreaker.calls",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "actuator",
+                "metrics",
+                "resilience4j.circuitbreaker.calls"
+              ]
+            },
+            "description": "Counts of successful, failed, slow, and not-permitted calls per breaker."
+          }
+        }
+      ]
+    }
+  ]
+}

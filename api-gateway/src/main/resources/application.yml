@@ -1,0 +1,107 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+
+  cloud:
+    gateway:
+      # Default filter applied to all routes — adds correlation ID for tracing.
+      default-filters:
+        - AddResponseHeader=X-Gateway, mayur-resilient-gateway-v1
+
+      routes:
+        # ---------------------------------------------------------
+        # USER SERVICE — read-heavy, generous rate limit
+        # ---------------------------------------------------------
+        - id: user-service
+          uri: http://${USER_SERVICE_HOST:localhost}:8081
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                # Token bucket: 10 req/s sustained, 20 burst.
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: userServiceCircuitBreaker
+                fallbackUri: forward:/fallback/users
+
+        # ---------------------------------------------------------
+        # ORDER SERVICE — write-heavy, stricter limits + tighter CB
+        # ---------------------------------------------------------
+        - id: order-service
+          uri: http://${ORDER_SERVICE_HOST:localhost}:8082
+          predicates:
+            - Path=/api/orders/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 5
+                redis-rate-limiter.burstCapacity: 10
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: orderServiceCircuitBreaker
+                fallbackUri: forward:/fallback/orders
+
+# ---------------------------------------------------------
+# JWT configuration — use env var in any non-local env.
+# ---------------------------------------------------------
+app:
+  security:
+    jwt:
+      # 256-bit demo secret. Override with APP_SECURITY_JWT_SECRET in prod.
+      secret: ${JWT_SECRET:ThisIsADemoSecretKeyForJWT_ReplaceInProduction_MinimumOf32Chars!!}
+      public-paths:
+        - /auth/login
+        - /auth/register
+        - /actuator/health
+        - /actuator/info
+        - /fallback/**
+
+# ---------------------------------------------------------
+# Resilience4j observability — expose state via Actuator
+# ---------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway,circuitbreakers,circuitbreakerevents
+  endpoint:
+    health:
+      show-details: always
+    gateway:
+      enabled: true
+  health:
+    circuitbreakers:
+      enabled: true
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowSize: 20
+        minimumNumberOfCalls: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 5
+
+logging:
+  level:
+    com.mayur.gateway: DEBUG
+    org.springframework.cloud.gateway: INFO
+    io.github.resilience4j: INFO
