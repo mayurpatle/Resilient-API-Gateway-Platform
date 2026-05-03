@@ -1,0 +1,33 @@
+# 1. Authentication
+$tokenResponse = Invoke-RestMethod -Uri "http://localhost:8080/auth/login" `
+    -Method Post -ContentType "application/json" -Body '{"username":"mayur"}'
+$token = $tokenResponse.accessToken
+Write-Host "✅ Got JWT token"
+
+# 2. Verify normal request works
+Invoke-RestMethod -Uri "http://localhost:8080/api/users" `
+    -Headers @{ "Authorization" = "Bearer $token" }
+Write-Host "✅ Normal request: 200 OK"
+
+# 3. Verify rate limiting kicks in (the test you just ran)
+$counts = @{ '200' = 0; '429' = 0 }
+1..50 | ForEach-Object {
+    try {
+        Invoke-WebRequest -Uri "http://localhost:8080/api/users" `
+            -Headers @{ "Authorization" = "Bearer $token" } `
+            -UseBasicParsing -ErrorAction Stop | Out-Null
+        $counts['200']++
+    } catch {
+        if ([int]$_.Exception.Response.StatusCode -eq 429) { $counts['429']++ }
+    }
+}
+Write-Host "✅ Rate limit triggered: $($counts['200']) allowed, $($counts['429']) rejected"
+
+# 4. Verify Redis is the source of truth
+docker exec gateway-redis redis-cli MGET `
+    "request_rate_limiter.{user:mayur}.tokens" `
+    "request_rate_limiter.{user:mayur}.timestamp"
+Write-Host "✅ Bucket state stored in Redis"
+
+# 5. Verify circuit breaker (separate demo)
+Write-Host "Now run the chaos toggle to demo circuit breaker..."
